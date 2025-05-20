@@ -1,8 +1,7 @@
 streamlit
-pandas
+polars
 numpy
-matplotlib
-seaborn
+plotly
 scikit-learn
 gspread
 oauth2client

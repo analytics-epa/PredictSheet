@@ -1,8 +1,8 @@
 import streamlit as st
-import pandas as pd
+import polars as pl
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as go
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 import gspread
@@ -38,7 +38,7 @@ def cargar_datos_google_sheets(sheet_url):
             
         # Obtener todos los valores
         data = worksheet.get_all_records()
-        df = pd.DataFrame(data)
+        df = pl.DataFrame(data)
         return df
         
     except Exception as e:
@@ -56,17 +56,17 @@ if sheet_url:
         
         # Mostrar los datos
         st.subheader("Vista previa de los datos")
-        st.write(df.head())
+        st.write(df.head().to_pandas())
         
         # Información básica
         st.subheader("Información básica")
         col1, col2 = st.columns(2)
         with col1:
-            st.write(f"**Número de filas:** {df.shape[0]}")
-            st.write(f"**Número de columnas:** {df.shape[1]}")
+            st.write(f"**Número de filas:** {df.height}")
+            st.write(f"**Número de columnas:** {df.width}")
         with col2:
             st.write("**Tipos de datos:**")
-            st.write(df.dtypes)
+            st.write(dict(zip(df.columns, df.dtypes)))
         
         # Selección de variables
         st.subheader("Selección de variables para análisis R²")
@@ -75,9 +75,9 @@ if sheet_url:
         numeric_cols = []
         for col in df.columns:
             try:
-                df[col] = pd.to_numeric(df[col])
+                df = df.with_columns(pl.col(col).cast(pl.Float64, strict=False))
                 numeric_cols.append(col)
-            except:
+            except Exception:
                 pass
         
         if len(numeric_cols) < 2:
@@ -94,8 +94,8 @@ if sheet_url:
             
             if x_vars and y_var != "Ninguna":
                 # Preparar datos para regresión
-                X = df[x_vars]
-                y = df[y_var]
+                X = df.select(x_vars).to_numpy()
+                y = df[y_var].to_numpy()
                 
                 # Crear y entrenar modelo de regresión lineal
                 model = LinearRegression()
@@ -124,47 +124,61 @@ if sheet_url:
                 # Coeficientes
                 with col2:
                     st.write("**Coeficientes del modelo:**")
-                    coef_df = pd.DataFrame({'Variable': x_vars, 'Coeficiente': model.coef_})
-                    st.write(coef_df)
+                    coef_df = pl.DataFrame({'Variable': x_vars, 'Coeficiente': model.coef_})
+                    st.write(coef_df.to_pandas())
                     st.write(f"**Intercepto:** {model.intercept_:.4f}")
                 
                 # Gráficas
                 st.subheader("Visualizaciones")
                 
                 # Gráfica real vs predicho
-                fig, ax = plt.subplots(figsize=(10, 6))
-                ax.scatter(y, y_pred, alpha=0.5)
-                ax.plot([y.min(), y.max()], [y.min(), y.max()], 'r--')
-                ax.set_xlabel(f'Valor real de {y_var}')
-                ax.set_ylabel('Valor predicho')
-                ax.set_title('Valores reales vs. predichos')
-                st.pyplot(fig)
-                
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=y, y=y_pred, mode="markers", name="Datos", opacity=0.5))
+                fig.add_trace(
+                    go.Scatter(
+                        x=[y.min(), y.max()],
+                        y=[y.min(), y.max()],
+                        mode="lines",
+                        line=dict(color="red", dash="dash"),
+                        name="Ideal",
+                    )
+                )
+                fig.update_layout(
+                    xaxis_title=f"Valor real de {y_var}",
+                    yaxis_title="Valor predicho",
+                    title="Valores reales vs. predichos",
+                )
+                st.plotly_chart(fig)
+
                 # Si hay una sola variable independiente, mostrar gráfica de dispersión con línea de regresión
                 if len(x_vars) == 1:
-                    fig2, ax2 = plt.subplots(figsize=(10, 6))
-                    sns.regplot(x=df[x_vars[0]], y=df[y_var], ax=ax2)
-                    ax2.set_xlabel(x_vars[0])
-                    ax2.set_ylabel(y_var)
-                    ax2.set_title(f'Regresión: {x_vars[0]} vs {y_var} (R² = {r2:.4f})')
-                    st.pyplot(fig2)
+                    fig2 = px.scatter(
+                        df.select([x_vars[0], y_var]).to_pandas(),
+                        x=x_vars[0],
+                        y=y_var,
+                        trendline="ols",
+                        title=f'Regresión: {x_vars[0]} vs {y_var} (R² = {r2:.4f})',
+                    )
+                    st.plotly_chart(fig2)
                 
                 # Resumen estadístico
                 st.subheader("Resumen estadístico")
-                st.write(df[x_vars + [y_var]].describe())
+                st.write(df.select(x_vars + [y_var]).describe().to_pandas())
                 
                 # Exportar resultados
                 st.subheader("Exportar resultados")
                 
                 # Crear DataFrame con resultados
-                results_df = pd.DataFrame({
-                    'Variable': x_vars + ['Intercepto'],
-                    'Coeficiente': list(model.coef_) + [model.intercept_]
-                })
-                results_df['R²'] = r2
+                results_df = pl.DataFrame(
+                    {
+                        'Variable': x_vars + ['Intercepto'],
+                        'Coeficiente': list(model.coef_) + [model.intercept_],
+                    }
+                )
+                results_df = results_df.with_columns(pl.lit(r2).alias('R²'))
                 
                 # Opción para descargar como CSV
-                csv = results_df.to_csv(index=False)
+                csv = results_df.write_csv()
                 st.download_button(
                     label="Descargar resultados CSV",
                     data=csv,
